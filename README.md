@@ -157,6 +157,12 @@ python honeypot_rl.py &
 python simulate_attacker.py --mode rl --sessions 200
 ```
 
+- Fast offline Q-table training without socket delays:
+
+```bash
+python train_model.py --reset --sessions 5000 --seed 20260603
+```
+
 - Inspect Q-table after a run:
 
 ```bash
@@ -264,5 +270,4 @@ teşvik edecek şekilde tasarlanmıştır.
 
 ---
 
-Teşekkürler — README'yi daha da özelleştirmemi isterseniz hangi kısımlara odaklanmamı
-söyleyin (ör. daha çok örnek analiz, görsel pano rehberi, deney senaryoları).
+
