@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+.DS_Store
+.env
+.venv/
+venv/
+.q_table.json
+q_table.json
