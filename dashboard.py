@@ -751,10 +751,146 @@ def render_rl_learning(
                            plot_bgcolor="rgba(0,0,0,0)")
         sc2.plotly_chart(f_t, use_container_width=True)
 
-    # ── Fix 3: Baseline karşılaştırması ───────────────────────────────────────
+    # ── Baseline karşılaştırması ──────────────────────────────────────────────
     if training_summary and "baseline_comparison" in training_summary:
         st.divider()
-        st.markdown("**📊 Baseline Policy Comparison (Fix 3)**")
+        multi = training_summary.get("multi_seed_evaluation", {})
+        if multi:
+            st.markdown("**📊 Robust Baseline Policy Comparison (10-Seed Evaluation)**")
+
+            fixed = multi.get("fixed_policy_rewards", {})
+            rl_reward = multi.get("rl_reward", {})
+            best_fixed = multi.get("best_fixed_reward", {})
+            random_reward = multi.get("random_reward", {})
+
+            all_policies = {
+                "rl_agent": {
+                    "mean": rl_reward.get("mean", 0),
+                    "std": rl_reward.get("std", 0),
+                }
+            }
+            all_policies.update({
+                name: {
+                    "mean": values.get("mean", 0),
+                    "std": values.get("std", 0),
+                }
+                for name, values in fixed.items()
+            })
+
+            cmp_df = pd.DataFrame([
+                {
+                    "Policy": name,
+                    "Mean Reward": values["mean"],
+                    "Std": values.get("std", 0),
+                }
+                for name, values in all_policies.items()
+            ]).sort_values("Mean Reward", ascending=False)
+
+            bc1, bc2 = st.columns(2)
+            with bc1:
+                _POLICY_COLORS = {
+                    "rl_agent":            "#e63946",
+                    "always_decoy_lure":   "#fca311",
+                    "always_honeytrap":    "#457b9d",
+                    "always_fake_success": "#2dc653",
+                    "random":              "#888888",
+                    "always_silent_error": "#4a4a4a",
+                    "always_slow_response": "#e9c46a",
+                }
+                fig_bl = px.bar(
+                    cmp_df,
+                    x="Mean Reward",
+                    y="Policy",
+                    orientation="h",
+                    error_x="Std",
+                    title="RL vs Fixed Policies — 10-Seed Mean Reward",
+                    color="Policy",
+                    color_discrete_map=_POLICY_COLORS,
+                )
+                fig_bl.update_layout(
+                    height=340,
+                    showlegend=False,
+                    yaxis=dict(categoryorder="total ascending"),
+                    margin=dict(l=8, r=8, t=44, b=8),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_bl, use_container_width=True)
+
+            with bc2:
+                best_name = multi.get("best_fixed_policy", "?")
+                vs_random = multi.get("rl_vs_random_pct", 0)
+                vs_best = multi.get("rl_vs_best_fixed_pct", 0)
+                success = multi.get("success_vs_best_fixed_pct", 0)
+                seed_count = multi.get("seed_count", 0)
+                per_seed = multi.get("per_seed_success_vs_best_fixed_pct", {})
+
+                st.metric(
+                    "RL mean reward",
+                    f"{rl_reward.get('mean', 0):.2f}",
+                    delta=f"±{rl_reward.get('std', 0):.2f} std",
+                    delta_color="off",
+                )
+                st.metric(
+                    f"Best fixed mean ({best_name})",
+                    f"{best_fixed.get('mean', 0):.2f}",
+                    delta=f"±{best_fixed.get('std', 0):.2f} std",
+                    delta_color="off",
+                )
+                st.metric(
+                    "Success vs best fixed",
+                    f"{success:.2f}%",
+                    delta=f"{vs_best:+.2f}%",
+                    delta_color="normal",
+                )
+                st.metric(
+                    "RL vs random",
+                    f"{random_reward.get('mean', 0):.2f}",
+                    delta=f"{vs_random:+.2f}%",
+                    delta_color="normal",
+                )
+
+                if vs_best >= 0:
+                    st.success(
+                        f"RL agent passes the aggregate best fixed policy over "
+                        f"{seed_count} seeds. Per-seed success range: "
+                        f"{per_seed.get('min', 0):.2f}%–{per_seed.get('max', 0):.2f}%."
+                    )
+                else:
+                    st.warning(
+                        f"RL agent is {abs(vs_best):.2f}% behind the aggregate best fixed "
+                        "policy in the multi-seed benchmark."
+                    )
+
+            details = pd.DataFrame([
+                {"Metric": "Evaluation seeds", "Value": multi.get("seed_count", "—")},
+                {
+                    "Metric": "RL eval sessions per seed",
+                    "Value": multi.get("evaluation_sessions_per_seed", "—"),
+                },
+                {
+                    "Metric": "Baseline sessions per policy/seed",
+                    "Value": multi.get("baseline_sessions_per_policy_per_seed", "—"),
+                },
+                {
+                    "Metric": "RL reward min / max",
+                    "Value": (
+                        f"{rl_reward.get('min', 0):.2f} / "
+                        f"{rl_reward.get('max', 0):.2f}"
+                    ),
+                },
+                {
+                    "Metric": "Per-seed success min / max",
+                    "Value": (
+                        f"{per_seed.get('min', 0):.2f}% / "
+                        f"{per_seed.get('max', 0):.2f}%"
+                    ),
+                },
+            ])
+            st.dataframe(details, use_container_width=True, hide_index=True)
+            return
+
+        st.markdown("**📊 Baseline Policy Comparison (Single-Seed Evaluation)**")
 
         bl = training_summary["baseline_comparison"]
         baselines = bl.get("baselines", {})
@@ -804,13 +940,11 @@ def render_rl_learning(
 
             if vs_best < 0:
                 st.info(
-                    f"**{best_name}** RL ajanı {abs(vs_best):.0f}% geride bırakıyor. "
-                    "Bu beklenen bir durum: state uzayı büyüdüğü için daha fazla "
-                    "eğitim (~100k oturum) gerekiyor. "
-                    "`python train_model.py --sessions 100000 --reset`"
+                    f"Single-seed result is {abs(vs_best):.1f}% behind **{best_name}**. "
+                    "Use the multi-seed benchmark for the main reported result."
                 )
             else:
-                st.success(f"RL ajanı tüm sabit politikaları geride bırakıyor! ✅")
+                st.success("RL agent passes all fixed policies in this single-seed run.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
