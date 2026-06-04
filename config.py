@@ -19,6 +19,9 @@ EPSILON_MIN = 0.05    # Never drop below 5% exploration
 EPSILON_DECAY = 0.9997 # Multiply epsilon by this after each episode
                        # 0.995 → min sonra ~1.400 oturum (çok erken)
                        # 0.9997 → min sonra ~20.000 oturum (tüm eğitimi kapsar)
+ACTION_PRIOR_WEIGHT = 20.0
+# Domain-informed policy prior used only during exploitation.
+# 0.0 disables it and returns to pure Q-value argmax.
 
 # Reward weights
 W_ENGAGE = 1.0    # Engagement continuation reward
@@ -62,8 +65,8 @@ ACTION_NAMES = {
 HONEYPOT_BANNER = "\r\nUbuntu 20.04.3 LTS\r\nlogin: "
 
 # ── Fix 4: Genişletilmiş state temsili ────────────────────────────────────────
-STATE_WINDOW_SIZE = 3     # Pencere 3: 7^3×3×3×3 = ~13k state → 20k oturumla örtülür
-                          # Pencere 5 çok büyük (450k+ teorik state), yakınsama güçleşir
+STATE_WINDOW_SIZE = 3     # Pencere 3: 9^3×3×3×3 = ~19.7k teorik state
+                          # Pencere 5 çok büyük olur, yakınsama güçleşir
 DEPTH_EARLY_MAX   = 5     # 1-5 komut  → EARLY
 DEPTH_MID_MAX     = 15    # 6-15 komut → MID  (16+ → LATE)
 
@@ -72,11 +75,15 @@ DEPTH_MID_MAX     = 15    # 6-15 komut → MID  (16+ → LATE)
 CATEGORY_WEIGHTS = {
     "AUTH":    0.5,   # Credential stuffing: yaygın, düşük değer
     "RECON":   1.0,   # Keşif: temel değer
+    "SCAN":    1.4,   # Araç bazlı tarama (nmap, nikto): aktif keşif
     "FILE":    1.3,   # Dosya erişimi: saldırgan bir şey buldu
     "EXEC":    1.8,   # Komut çalıştırma: yüksek değer
-    "PERSIST": 2.0,   # Kalıcılık: en yüksek değer
+    "EXPLOIT": 2.2,   # Aktif sömürü girişimi (sqlmap, hydra): en kritik
+    "PERSIST": 2.0,   # Kalıcılık: çok yüksek değer
     "UNKNOWN": 0.8,   # Tanınmayan komut: temel altı
 }
+# HONEYTRAP_OFFER follow bonusu (EXEC/PERSIST/FILE after action 4)
+W_HONEYTRAP = 2.5   # DECOY_LURE'dan biraz düşük
 TTP_PROGRESSION_BONUS = 1.5   # Kill-chain'de ilerleme bonusu
 EXEC_PERSIST_BONUS    = 1.5   # EXEC/PERSIST kategorisi ek bonusu
 

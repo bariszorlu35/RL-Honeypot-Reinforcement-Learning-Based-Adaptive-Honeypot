@@ -25,10 +25,10 @@ attacker profiles?*
 
 ## 2. State Space Definition
 
-The RL state is a 3-tuple:
+The RL state is a 4-tuple:
 
 ```
-state = (last_3_command_categories, tempo, behavior_class)
+state = (last_3_command_categories, tempo, behavior_class, depth)
 ```
 
 | Component | Values | Description |
@@ -36,18 +36,20 @@ state = (last_3_command_categories, tempo, behavior_class)
 | `last_3_command_categories` | Tuple of 3 strings | Rolling window of the last three command categories, padded with `"NULL"` at session start |
 | `tempo` | `"SLOW"`, `"NORMAL"`, `"FAST"` | Commands per minute: <10 = SLOW, >60 = FAST |
 | `behavior_class` | `"BOT"`, `"HUMAN"`, `"UNKNOWN"` | Classification based on scoring signals |
+| `depth` | `"EARLY"`, `"MID"`, `"LATE"` | Session phase based on command count |
 
 **Example states:**
 
 ```
-(("NULL", "NULL", "AUTH"), "FAST", "BOT")       — new bot session, auth commands only
-(("RECON", "FILE", "EXEC"), "SLOW", "HUMAN")    — experienced human, deliberate pace
-(("AUTH", "RECON", "PERSIST"), "NORMAL", "UNKNOWN") — mixed signals
+(("NULL", "NULL", "AUTH"), "FAST", "BOT", "EARLY")       — new bot session, auth commands only
+(("RECON", "FILE", "EXEC"), "SLOW", "HUMAN", "MID")      — experienced human, deliberate pace
+(("AUTH", "RECON", "PERSIST"), "NORMAL", "UNKNOWN", "LATE") — mixed signals
 ```
 
-**State space size:** The theoretical maximum is `7³ × 3 × 3 = 1,323` states
-(7 categories including NULL, 3 tempos, 3 behaviour classes). In practice far fewer
-states are visited because most attack sessions follow predictable patterns.
+**State space size:** The theoretical maximum is approximately
+`9³ × 3 × 3 × 3 = 19,683` states (8 command categories plus NULL, 3 tempos,
+3 behaviour classes, 3 depth buckets). In practice far fewer states are visited
+because most attack sessions follow predictable patterns.
 
 ---
 
@@ -56,10 +58,12 @@ states are visited because most attack sessions follow predictable patterns.
 | Category | Keywords (first word of command) |
 |----------|----------------------------------|
 | `AUTH` | login, user, pass, su, sudo, passwd |
-| `RECON` | ls, dir, pwd, whoami, uname, id, ps, netstat, ifconfig, ip |
+| `RECON` | ls, dir, pwd, whoami, uname, id, ps, netstat, ifconfig, ip, history, env, ss |
+| `SCAN` | nmap, masscan, nikto, dirb, gobuster, dirsearch, wfuzz, ffuf |
 | `FILE` | cat, wget, curl, get, put, download, upload, ftp, scp, cp, mv, tar, find |
-| `EXEC` | sh, bash, exec, python, python3, perl, ruby, php |
-| `PERSIST` | crontab, chmod, chown, echo, tee, systemctl, service |
+| `EXEC` | sh, bash, exec, python, python3, perl, ruby, php, nc, netcat |
+| `EXPLOIT` | sqlmap, hydra, medusa, msfconsole, msfvenom, metasploit, wpscan |
+| `PERSIST` | crontab, chmod, chown, echo, tee, systemctl, service, useradd |
 | `UNKNOWN` | anything else (typos, novel commands, tool-specific syntax) |
 
 ---
@@ -75,6 +79,10 @@ states are visited because most attack sessions follow predictable patterns.
 | 4 | `HONEYTRAP_OFFER` | Fake success + hint toward a fake high-value target (admin portal, credentials archive) |
 
 The agent selects an action per command using ε-greedy selection over the Q-table.
+During exploitation, Q-values are combined with a configurable state-aware action
+prior (`ACTION_PRIOR_WEIGHT`). This prior encodes simple honeypot domain knowledge:
+bots are slowed or discouraged, unknown sessions are kept engaged with decoys, and
+deep human-like sessions are steered toward honeytrap offers.
 
 ---
 
@@ -130,15 +138,19 @@ observable signals:
 
 **Bot signals (each +1 to `bot_score`):**
 - Commands per minute > 60
+- Commands per minute > 90 gives an additional fast-tempo point
 - Same command repeated 3+ times consecutively
 - Inter-command delay standard deviation < 0.3 s
-- >85% of commands in the session are AUTH category (and ≥5 commands)
+- >80% of commands in the session are AUTH category (and ≥3 commands)
+- 100% AUTH traffic gives an additional point
 
 **Human signals (each +1 to `human_score`):**
-- Commands per minute < 10 (and ≥3 commands seen)
-- ≥3 unique categories within first 10 commands
+- Commands per minute < 10 (and ≥2 commands seen)
+- ≥2 unique categories after at least 5 commands
+- ≥3 unique categories after at least 10 commands
 - At least one UNKNOWN command (typo or tool-specific)
 - Inter-command delay standard deviation > 1.5 s
+- Any EXEC or PERSIST command gives a strong human-like signal
 
 **Classification rule:**
 ```python
@@ -202,6 +214,23 @@ attacker sessions.
 | Mean Engagement by Profile | Average engagement score grouped by mode and attacker profile | Dashboard Tab 2 |
 | Behaviour Distribution | Count of BOT/HUMAN/UNKNOWN per mode | Dashboard Tab 4 |
 | Avg Session Duration | Mean of `duration` column per behaviour class | Dashboard Tab 4 |
+| RL Success vs Best Fixed | `rl_eval_avg_reward / best_fixed_avg_reward` | `train_model.py --compare-baselines` |
+| RL vs Random Improvement | `(rl_eval_avg_reward - random_avg_reward) / random_avg_reward` | `train_model.py --compare-baselines` |
+
+Current offline benchmark:
+
+| Metric | Value |
+|--------|-------|
+| Training sessions | 100,000 |
+| Evaluation sessions | 8,000 |
+| Training epsilon floor | 0.05 |
+| Evaluation epsilon | 0.00 |
+| RL learned policy avg reward | 394.097 |
+| Random baseline avg reward | 201.890 |
+| Best fixed baseline | `always_honeytrap` |
+| Best fixed avg reward | 410.949 |
+| Success vs best fixed | 95.9% |
+| Improvement vs random | +95.2% |
 
 ---
 

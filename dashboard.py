@@ -17,6 +17,7 @@ Run with: streamlit run dashboard.py
 import json
 import os
 import time
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd
@@ -178,6 +179,8 @@ def render_sidebar() -> tuple:
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.rerun()
 
+        st.caption(f"🕐 {datetime.now().strftime('%H:%M:%S')}  —  son yükleme")
+
         auto_refresh = st.checkbox("Auto-refresh", value=False)
         refresh_secs = st.slider(
             "Refresh interval (s)", 2, 30, 5, disabled=not auto_refresh
@@ -223,10 +226,16 @@ def render_header(qs: dict) -> None:
     has_data   = qs["states"] > 0
     pill_cls   = "status-active" if has_data else "status-idle"
     pill_label = "● Policy Loaded" if has_data else "○ No Policy"
+    now        = datetime.now().strftime("%d %b %Y  •  %H:%M:%S")
     st.markdown(
-        f'<span class="hp-badge">RL-HONEYPOT</span>'
-        f'<span class="hp-title">Adaptive Q-Learning Honeypot Dashboard</span>&nbsp;&nbsp;'
-        f'<span class="status-pill {pill_cls}">{pill_label}</span>',
+        f'<div style="display:flex; align-items:center; gap:10px;">'
+        f'  <span class="hp-badge">RL-HONEYPOT</span>'
+        f'  <span class="hp-title">Adaptive Q-Learning Honeypot Dashboard</span>'
+        f'  <span class="status-pill {pill_cls}" style="margin-left:12px">{pill_label}</span>'
+        f'  <span style="margin-left:auto; font-size:0.82rem; opacity:0.55; '
+        f'             font-variant-numeric:tabular-nums; letter-spacing:0.03em;">'
+        f'    🕐 {now}</span>'
+        f'</div>',
         unsafe_allow_html=True,
     )
     st.markdown("")

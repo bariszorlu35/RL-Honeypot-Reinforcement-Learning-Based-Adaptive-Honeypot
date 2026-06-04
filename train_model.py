@@ -71,6 +71,15 @@ HONEYTRAP_FOLLOW_PROB = {
     "operator": 0.45,
 }
 
+POLICY_SEED_OFFSETS = {
+    "random": 101,
+    "always_fake_success": 211,
+    "always_decoy_lure": 307,
+    "always_honeytrap": 401,
+    "always_silent_error": 503,
+    "always_slow_response": 601,
+}
+
 
 @dataclass
 class Observation:
@@ -244,7 +253,13 @@ def _train_one_session(
             # session_bonus (100-200 puan) son aksiyona atanıyordu — yanlış.
             # Q-güncelleme SADECE terminal_step_reward ile yapılır.
             # session_bonus izleme/raporlama için ayrıca kaydedilir.
-            agent.update(obs.state, action_id, terminal_step_reward, obs.state)
+            agent.update(
+                obs.state,
+                action_id,
+                terminal_step_reward,
+                obs.state,
+                terminal=True,
+            )
             total_reward += terminal_step_reward + session_bonus
             break
 
@@ -381,20 +396,20 @@ def run_baselines(sessions: int, include_bot: bool, seed: int) -> dict:
       always_decoy_lure   — her zaman aksiyon 2
       always_honeytrap    — her zaman aksiyon 4
       always_silent_error — her zaman aksiyon 0
+      always_slow_response — her zaman aksiyon 3
     """
-    rng_base = random.Random(seed)
-
     policies: dict = {
         "random":              None,            # özel durum — aşağıda ele alınır
         "always_fake_success": lambda s: 1,
         "always_decoy_lure":   lambda s: 2,
         "always_honeytrap":    lambda s: 4,
         "always_silent_error": lambda s: 0,
+        "always_slow_response": lambda s: 3,
     }
 
     results: dict = {}
     for policy_name, action_fn in policies.items():
-        rng_p = random.Random(seed + abs(hash(policy_name)) % 99991)
+        rng_p = random.Random(seed + POLICY_SEED_OFFSETS[policy_name])
 
         if action_fn is None:
             # random policy: farklı bir rng kullanarak her çağrıda rastgele
@@ -425,6 +440,51 @@ def run_baselines(sessions: int, include_bot: bool, seed: int) -> dict:
     return results
 
 
+def evaluate_learned_policy(
+    agent: QLearningAgent,
+    sessions: int,
+    include_bot: bool,
+    seed: int,
+) -> dict:
+    """Evaluate the learned policy with exploration disabled and no Q updates."""
+    original_epsilon = agent.epsilon
+    agent.epsilon = 0.0
+
+    rng = random.Random(seed)
+    random.seed(seed)
+    total_reward = 0.0
+    total_commands = 0
+    profile_counts: Counter = Counter()
+    behavior_counts: Counter = Counter()
+    action_counts: Counter = Counter()
+
+    def _learned_action(state):
+        action_id = agent.select_action(state)
+        action_counts[config.ACTION_NAMES[action_id]] += 1
+        return action_id
+
+    try:
+        for _ in range(sessions):
+            profile_name = _weighted_profile(rng, "", include_bot)
+            stats = _run_baseline_session(_learned_action, profile_name, rng)
+            total_reward += stats.reward
+            total_commands += stats.commands
+            profile_counts[stats.profile] += 1
+            behavior_counts[stats.behavior_class] += 1
+    finally:
+        agent.epsilon = original_epsilon
+
+    return {
+        "sessions": sessions,
+        "epsilon": 0.0,
+        "avg_reward": round(total_reward / max(sessions, 1), 3),
+        "avg_commands": round(total_commands / max(sessions, 1), 3),
+        "profiles": dict(profile_counts),
+        "behaviors": dict(behavior_counts),
+        "actions": dict(action_counts),
+    }
+
+
 def train(
     sessions: int,
     q_table_path: str,
@@ -435,6 +495,7 @@ def train(
     progress_every: int,
     compare_baselines: bool = False,
     baseline_sessions: int = 2000,
+    evaluation_sessions: int = 5000,
 ) -> dict:
     if reset:
         Path(q_table_path).unlink(missing_ok=True)
@@ -493,30 +554,47 @@ def train(
 
     # Fix 3: baseline karşılaştırması
     if compare_baselines:
+        print(f"\n[Trainer] Öğrenilmiş policy test ediliyor ({evaluation_sessions} oturum, epsilon=0.00)...")
+        eval_result = evaluate_learned_policy(
+            agent=agent,
+            sessions=evaluation_sessions,
+            include_bot=include_bot,
+            seed=seed + 2,
+        )
+
         print(f"\n[Trainer] Baseline politikalar çalıştırılıyor ({baseline_sessions} oturum / policy)...")
         bl_results = run_baselines(baseline_sessions, include_bot, seed + 1)
 
         best_name = max(bl_results, key=lambda k: bl_results[k]["avg_reward"])
         best_avg  = bl_results[best_name]["avg_reward"]
         rand_avg  = bl_results["random"]["avg_reward"]
+        rl_eval_avg = eval_result["avg_reward"]
 
         def _pct(a: float, b: float) -> float:
             return round((a - b) / max(abs(b), 1e-9) * 100, 2)
 
         summary["baseline_comparison"] = {
-            "rl_avg_reward":         round(rl_avg, 3),
+            "rl_avg_reward":         round(rl_eval_avg, 3),
+            "rl_training_avg_reward": round(rl_avg, 3),
+            "rl_evaluation":         eval_result,
             "random_avg_reward":     round(rand_avg, 3),
             "best_fixed_policy":     best_name,
             "best_fixed_avg_reward": round(best_avg, 3),
-            "rl_vs_random_pct":      _pct(rl_avg, rand_avg),
-            "rl_vs_best_fixed_pct":  _pct(rl_avg, best_avg),
+            "rl_success_vs_best_fixed_pct": round(
+                rl_eval_avg / max(abs(best_avg), 1e-9) * 100,
+                2,
+            ),
+            "rl_vs_random_pct":      _pct(rl_eval_avg, rand_avg),
+            "rl_vs_best_fixed_pct":  _pct(rl_eval_avg, best_avg),
             "baselines":             bl_results,
         }
         print(
             f"\n[Trainer] Karşılaştırma özeti:"
-            f"\n  RL agent        : {rl_avg:.2f}"
+            f"\n  RL train avg    : {rl_avg:.2f}"
+            f"\n  RL eval ε=0     : {rl_eval_avg:.2f}"
             f"\n  Random policy   : {rand_avg:.2f}"
             f"\n  Best fixed ({best_name}): {best_avg:.2f}"
+            f"\n  Success vs best : {summary['baseline_comparison']['rl_success_vs_best_fixed_pct']:.1f}%"
             f"\n  RL vs random    : {summary['baseline_comparison']['rl_vs_random_pct']:+.1f}%"
             f"\n  RL vs best fixed: {summary['baseline_comparison']['rl_vs_best_fixed_pct']:+.1f}%"
         )
@@ -584,6 +662,12 @@ def main() -> None:
         default=2000,
         help="--compare-baselines için her politikada kaç oturum (varsayılan: 2000)",
     )
+    parser.add_argument(
+        "--eval-sessions",
+        type=int,
+        default=5000,
+        help="--compare-baselines için epsilon=0 learned-policy test oturumu",
+    )
 
     args = parser.parse_args()
     if args.no_bot and args.profile == "bot":
@@ -599,6 +683,7 @@ def main() -> None:
         progress_every=args.progress_every,
         compare_baselines=args.compare_baselines,
         baseline_sessions=args.baseline_sessions,
+        evaluation_sessions=args.eval_sessions,
     )
 
     with open(args.summary, "w") as fh:

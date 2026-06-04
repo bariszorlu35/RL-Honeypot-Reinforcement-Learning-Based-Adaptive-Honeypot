@@ -118,6 +118,7 @@ State representation:
 - `last_3_command_categories` — sliding window of last 3 categories
 - `tempo` — typing speed bucket (`SLOW`, `NORMAL`, `FAST`)
 - `behavior_class` — `BOT`, `HUMAN`, or `UNKNOWN`
+- `depth` — session stage bucket (`EARLY`, `MID`, `LATE`)
 
 Actions:
 
@@ -136,6 +137,26 @@ Reward (high-level):
 
 Q-table persistence: `q_table.json`.
 
+Evaluation is separated from training. Training keeps exploration enabled
+(`epsilon` decays to `0.05`), while learned-policy evaluation temporarily uses
+`epsilon=0.00` and performs no Q-table updates.
+
+Current offline benchmark (`100000` training sessions, `8000` evaluation
+sessions, seed `20260603`):
+
+| Metric | Value |
+|--------|-------|
+| Training sessions | 100,000 |
+| Evaluation sessions | 8,000 |
+| Learned states | 1,957 |
+| RL evaluation reward | 394.10 |
+| Random baseline reward | 201.89 |
+| Best fixed baseline | always_honeytrap |
+| Best fixed baseline reward | 410.95 |
+| Success vs best fixed | 95.9% |
+| RL vs random | +95.2% |
+| Gap to best fixed | -4.1% |
+
 ---
 
 ## Configuration
@@ -143,6 +164,7 @@ Q-table persistence: `q_table.json`.
 All key parameters are in `config.py`. Typical knobs to experiment with:
 
 - `epsilon_start`, `epsilon_decay`, `epsilon_min`
+- `ACTION_PRIOR_WEIGHT` for the state-aware exploitation prior
 - reward weights for engagement, diversity, lure
 - response strategy definitions in `response_strategies.py`
 
@@ -160,7 +182,8 @@ python simulate_attacker.py --mode rl --sessions 200
 - Fast offline Q-table training without socket delays:
 
 ```bash
-python train_model.py --reset --sessions 5000 --seed 20260603
+python train_model.py --reset --sessions 100000 --seed 20260603 \
+  --compare-baselines --baseline-sessions 3000 --eval-sessions 8000
 ```
 
 - Inspect Q-table after a run:
@@ -261,6 +284,11 @@ Güvenlik: hiçbir yerde gerçek komut çalıştırılmaz; sahte içerikler kull
 Durum ve eylemler aynıdır; ödül yapısı etkileşim, çeşitlilik ve tuzak etkileşimini
 teşvik edecek şekilde tasarlanmıştır.
 
+Eğitim ve değerlendirme ayrıdır: eğitim sonunda keşif oranı `epsilon=0.05`
+kalır, değerlendirme/test aşamasında ise öğrenilmiş politika `epsilon=0.00`
+ile ölçülür. Güncel offline sonuçta RL politika en iyi sabit baseline'ın
+`%95.9` seviyesine ulaşmış, random baseline'a göre `%95.2` iyileşme vermiştir.
+
 ---
 
 ## Sorun Giderme
@@ -269,5 +297,3 @@ teşvik edecek şekilde tasarlanmıştır.
 - Pano boş: simülatörü çalıştırıp veritabanını doldurun
 
 ---
-
-

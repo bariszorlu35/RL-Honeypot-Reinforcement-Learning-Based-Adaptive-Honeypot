@@ -20,18 +20,29 @@ COMMAND_CATEGORIES = {
     ],
     "RECON": [
         "ls", "dir", "pwd", "whoami", "uname", "id", "ps",
-        "netstat", "ifconfig", "ip",
+        "netstat", "ifconfig", "ip", "history", "env", "ss",
+        "lsof", "df", "mount", "w", "who", "last", "uptime",
+    ],
+    "SCAN": [
+        "nmap", "masscan", "nikto", "dirb", "gobuster",
+        "dirsearch", "wfuzz", "ffuf", "whatweb", "enum4linux",
     ],
     "FILE": [
         "cat", "wget", "curl", "get", "put", "download",
         "upload", "ftp", "scp", "cp", "mv", "tar", "find",
+        "less", "more", "head", "tail", "strings", "xxd",
     ],
     "EXEC": [
-        "sh", "bash", "exec", "python", "python3", "perl", "ruby", "php",
+        "sh", "bash", "exec", "python", "python3", "perl",
+        "ruby", "php", "nc", "netcat", "socat", "awk", "sed",
+    ],
+    "EXPLOIT": [
+        "sqlmap", "hydra", "medusa", "msfconsole", "msfvenom",
+        "metasploit", "burpsuite", "wpscan",
     ],
     "PERSIST": [
         "crontab", "chmod", "chown", "echo", "tee",
-        "systemctl", "service",
+        "systemctl", "service", "at", "useradd", "usermod",
     ],
     "UNKNOWN": [],
 }
@@ -203,10 +214,99 @@ def _context_response(command: str) -> str:
         return ""  # Silently succeeds — realistic Unix behaviour
     if first_word == "systemctl":
         return "● sshd.service - OpenSSH Daemon\r\n   Active: active (running)\r\n"
-    if first_word == "sh" or first_word == "bash":
+    if first_word in ("sh", "bash"):
         return "$ \r\n"
+    # ── RECON eklemeleri ─────────────────────────────────────────────────
+    if first_word == "history":
+        return (
+            "    1  ls -la\r\n    2  cat /etc/passwd\r\n"
+            "    3  wget http://127.0.0.1/backup.tar.gz\r\n"
+            "    4  tar -xzf backup.tar.gz\r\n    5  history\r\n"
+        )
+    if first_word == "env":
+        return (
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin\r\n"
+            "HOME=/root\r\nUSER=root\r\nSHELL=/bin/bash\r\n"
+            "DB_HOST=127.0.0.1\r\nDB_PASS=honeypot123\r\n"  # FAKE
+        )
+    if first_word in ("ss", "lsof"):
+        return (
+            "Netid  State   Local Address:Port\r\n"
+            "tcp    LISTEN  0.0.0.0:22\r\n"
+            "tcp    LISTEN  127.0.0.1:5432\r\n"
+            "tcp    LISTEN  0.0.0.0:80\r\n"
+        )
+    if first_word in ("w", "who", "last"):
+        return "root     pts/0  10.0.2.2  09:14   0:02  bash\r\n"
+    if first_word in ("df", "mount"):
+        return (
+            "Filesystem     1K-blocks  Used  Available Use%\r\n"
+            "/dev/sda1       20971520  4096   16777216  20%  /\r\n"
+        )
+    # ── SCAN komutları ────────────────────────────────────────────────────
+    if first_word == "nmap":
+        return (
+            "Starting Nmap 7.80\r\n"
+            "Nmap scan report for localhost (127.0.0.1)\r\n"
+            "Host is up (0.000008s latency).\r\n"
+            "PORT     STATE SERVICE  VERSION\r\n"
+            "22/tcp   open  ssh      OpenSSH 7.9p1\r\n"
+            "80/tcp   open  http     Apache 2.4.38\r\n"
+            "5432/tcp open  postgresql PostgreSQL 11.5\r\n"
+            "8080/tcp open  http     Nginx 1.14.0\r\n"
+            "Nmap done: 1 IP address (1 host up) in 1.23 seconds\r\n"
+        )
+    if first_word == "nikto":
+        return (
+            "- Nikto v2.1.6\r\n"
+            "+ Target IP: 127.0.0.1  Port: 80\r\n"
+            "+ /backup/: Backup directory found!\r\n"
+            "+ /admin/: Admin panel found!\r\n"
+            "+ /config.php: Configuration file exposed!\r\n"
+            "+ /db_backup.sql: Database backup accessible!\r\n"
+            "1 host(s) tested\r\n"
+        )
+    if first_word in ("dirb", "gobuster", "dirsearch", "ffuf", "wfuzz"):
+        return (
+            "DIRB v2.22\r\n"
+            "==> DIRECTORY: http://127.0.0.1/admin/\r\n"
+            "==> DIRECTORY: http://127.0.0.1/backup/\r\n"
+            "+ http://127.0.0.1/config.php  [CODE:200]\r\n"
+            "+ http://127.0.0.1/db_backup.sql  [CODE:200]\r\n"
+        )
+    if first_word in ("masscan", "whatweb", "enum4linux"):
+        return "Scan complete.\r\nOpen ports: 22, 80, 5432, 8080\r\n"
+    # ── EXPLOIT komutları ─────────────────────────────────────────────────
+    if first_word == "sqlmap":
+        return (
+            "[*] testing connection to target URL\r\n"
+            "[*] GET parameter 'id' is vulnerable!\r\n"
+            "[*] back-end DBMS: MySQL 5.7\r\n"
+            "[*] available databases: [appdb, users, logs]\r\n"
+        )
+    if first_word in ("hydra", "medusa"):
+        return (
+            "[22][ssh] host: 127.0.0.1  login: admin  password: password123\r\n"  # FAKE
+            "1 of 1 target successfully completed\r\n"
+        )
+    if first_word in ("msfconsole", "metasploit", "msfvenom"):
+        return (
+            "msf6 > use exploit/multi/handler\r\n"
+            "msf6 exploit(handler) > set PAYLOAD linux/x64/shell_reverse_tcp\r\n"
+            "msf6 exploit(handler) > run\r\n"
+            "[*] Started reverse TCP handler on 0.0.0.0:4444\r\n"
+        )
+    if first_word in ("nc", "netcat", "socat"):
+        return "Connection established.\r\n$ \r\n"
+    if first_word == "wpscan":
+        return (
+            "[+] URL: http://127.0.0.1/\r\n"
+            "[+] WordPress 5.8 identified\r\n"
+            "[+] admin user found\r\n"
+            "[!] 3 vulnerabilities identified\r\n"
+        )
 
-    return f"Command executed.\r\n"
+    return "Command executed.\r\n"
 
 
 # ---------------------------------------------------------------------------

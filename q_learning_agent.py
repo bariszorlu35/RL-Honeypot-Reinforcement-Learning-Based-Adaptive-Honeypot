@@ -5,8 +5,9 @@ Provides BehaviorClassifier, StateBuilder, QLearningAgent, and RewardCalculator.
 Changes vs original:
   Fix 2 — BehaviorClassifier: erken sınıflandırma (2 komuttan itibaren),
            yeni sinyaller (EXEC/PERSIST=HUMAN, pure-auth=BOT), eşik düzeltmesi.
-  Fix 4 — StateBuilder: pencere 3→5 (config.STATE_WINDOW_SIZE), oturum derinliği
-           (EARLY/MID/LATE) state'e eklendi → 4-tuple.
+  Fix 4 — StateBuilder: ayarlanabilir kategori penceresi
+           (config.STATE_WINDOW_SIZE), oturum derinliği (EARLY/MID/LATE)
+           state'e eklendi → 4-tuple.
   Fix 5 — RewardCalculator: kategori ağırlıkları, TTP ilerleme bonusu,
            EXEC/PERSIST yüksek değer bonusu.
   Fix 1 — QLearningAgent.update(): daha önce hiç görülmemiş state'e
@@ -159,13 +160,13 @@ class StateBuilder:
     """Builds RL state tuples from a rolling window of command categories.
 
     Fix 4 improvements:
-    - Pencere boyutu config.STATE_WINDOW_SIZE'dan okunur (varsayılan 5, eskisi 3).
+    - Pencere boyutu config.STATE_WINDOW_SIZE'dan okunur (varsayılan 3).
     - Oturum derinliği (EARLY/MID/LATE) state'in 4. boyutu olarak eklendi.
     State format: (window_tuple, tempo, behavior_class, depth)
-    Key format  : "c1,c2,c3,c4,c5|TEMPO|BEHAVIOR|DEPTH"
+    Key format  : "c1,c2,c3|TEMPO|BEHAVIOR|DEPTH"
     """
 
-    WINDOW_SIZE: int = config.STATE_WINDOW_SIZE   # 5 (eskisi sabit 3)
+    WINDOW_SIZE: int = config.STATE_WINDOW_SIZE
 
     def __init__(self) -> None:
         self._window: deque = deque(
@@ -271,13 +272,67 @@ class QLearningAgent:
             self._ensure_state(key)
             return dict(self._q_table[key])
 
+    def _action_prior_scores(self, state: Tuple) -> Dict[int, float]:
+        """State-aware action priors that encode honeypot domain knowledge.
+
+        The prior does not replace learned Q-values. It acts as an exploitation
+        bias so the agent avoids obviously poor actions in sparse or noisy
+        states while Q-learning continues to adjust the final ranking.
+        """
+        window, tempo, behavior_class, depth = state
+        scores = {action: 0.0 for action in range(self.NUM_ACTIONS)}
+        high_value_seen = any(
+            category in ("EXEC", "EXPLOIT", "PERSIST")
+            for category in window
+        )
+        file_or_high_seen = any(
+            category in ("FILE", "EXEC", "EXPLOIT", "PERSIST")
+            for category in window
+        )
+
+        if behavior_class == "BOT":
+            # Fast/repetitive bot traffic is better slowed or discouraged than
+            # fed with rich fake artifacts.
+            scores[3] += 2.5  # SLOW_RESPONSE
+            scores[0] += 1.5  # SILENT_ERROR
+            scores[1] -= 1.0
+            scores[2] -= 1.0
+            scores[4] -= 1.0
+        elif behavior_class == "HUMAN":
+            scores[2] += 1.0  # DECOY_LURE remains a safe human default
+            if depth == "LATE" or high_value_seen or (
+                tempo == "SLOW" and file_or_high_seen
+            ):
+                scores[4] += 2.5  # HONEYTRAP_OFFER for deeper sessions
+            else:
+                scores[2] += 2.0
+        else:
+            # Unknown early sessions should be kept engaged without escalating
+            # too aggressively.
+            scores[2] += 2.0
+            scores[4] += 0.5
+
+        return scores
+
     def select_action(self, state: Tuple) -> int:
         """ε-greedy action selection with random tie-breaking."""
         if random.random() < self.epsilon:
             return random.randint(0, self.NUM_ACTIONS - 1)
         q_vals = self.get_q_values(state)
-        best_val = max(q_vals.values())
-        best_actions = [int(a) for a, v in q_vals.items() if v == best_val]
+        prior_weight = config.ACTION_PRIOR_WEIGHT
+        if prior_weight:
+            priors = self._action_prior_scores(state)
+            scored_actions = {
+                int(action): value + prior_weight * priors[int(action)]
+                for action, value in q_vals.items()
+            }
+        else:
+            scored_actions = {int(action): value for action, value in q_vals.items()}
+
+        best_val = max(scored_actions.values())
+        best_actions = [
+            action for action, value in scored_actions.items() if value == best_val
+        ]
         return random.choice(best_actions)
 
     def update(
@@ -286,25 +341,29 @@ class QLearningAgent:
         action: int,
         reward: float,
         next_state: Tuple,
+        terminal: bool = False,
     ) -> None:
         """Bellman update with exploration bonus for newly discovered states.
 
         Fix 1: Eğer state daha önce hiç görülmemişse reward'a
         config.EXPLORATION_BONUS eklenir — yeni state'leri keşfetmek teşvik edilir.
+        Terminal transitions do not bootstrap from next-state Q-values because
+        no future action is possible after the session has ended.
         """
         state_key = _state_to_key(state)
         next_key  = _state_to_key(next_state)
 
         with self._lock:
             is_new = self._ensure_state(state_key)
-            self._ensure_state(next_key)
+            if not terminal:
+                self._ensure_state(next_key)
 
             # Fix 1: yeni state → küçük keşif bonusu
             if is_new:
                 reward += config.EXPLORATION_BONUS
 
             current_q  = self._q_table[state_key][str(action)]
-            max_next_q = max(self._q_table[next_key].values())
+            max_next_q = 0.0 if terminal else max(self._q_table[next_key].values())
 
             td_error = reward + config.GAMMA * max_next_q - current_q
             self._q_table[state_key][str(action)] += config.ALPHA * td_error
@@ -375,15 +434,27 @@ class RewardCalculator:
         if category == "FILE" and self._last_action == 2:
             reward += config.W_LURE
 
+        # HONEYTRAP follow: action 4 sonrası EXEC / PERSIST / FILE
+        if category in ("EXEC", "PERSIST", "FILE") and self._last_action == 4:
+            reward += config.W_HONEYTRAP
+
+        # SCAN / EXPLOIT yüksek değer bonusu
+        if category in ("SCAN", "EXPLOIT"):
+            reward += config.EXEC_PERSIST_BONUS
+
         # EXEC / PERSIST yüksek değer bonusu
         if category in ("EXEC", "PERSIST"):
             reward += config.EXEC_PERSIST_BONUS
 
-        # Davranış katsayısı
+        # Davranış katsayısı — BOT AUTH istisnası
         if behavior_class == "HUMAN":
             reward *= 1.5
         elif behavior_class == "BOT":
-            reward -= config.W_BOT
+            # AUTH komutları bot'tan credential istihbaratı sağlar → daha az ceza
+            if category == "AUTH":
+                reward -= config.W_BOT * 0.3   # hafif ceza
+            else:
+                reward -= config.W_BOT          # diğer komutlar: tam ceza
 
         # Tekrar cezası
         if self._category_history and self._category_history[-1] == category:
@@ -424,13 +495,23 @@ class RewardCalculator:
         if observed_category == "FILE" and action_id == 2:
             reward += config.W_LURE
 
+        # HONEYTRAP follow bonus (offline trainer versiyonu)
+        if observed_category in ("EXEC", "PERSIST", "FILE") and action_id == 4:
+            reward += config.W_HONEYTRAP
+
+        if observed_category in ("SCAN", "EXPLOIT"):
+            reward += config.EXEC_PERSIST_BONUS
+
         if observed_category in ("EXEC", "PERSIST"):
             reward += config.EXEC_PERSIST_BONUS
 
         if behavior_class == "HUMAN":
             reward *= 1.5
         elif behavior_class == "BOT":
-            reward -= config.W_BOT
+            if observed_category == "AUTH":
+                reward -= config.W_BOT * 0.3
+            else:
+                reward -= config.W_BOT
 
         if previous_category is not None and previous_category == observed_category:
             reward -= 0.5

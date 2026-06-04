@@ -81,6 +81,7 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
 
     prev_state = None
     prev_action = None
+    last_category = None
 
     _record_session_start()
     print(f"[RL Honeypot] New connection {addr[0]}:{addr[1]} → session {session_id}")
@@ -109,6 +110,7 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
             command_count += 1
             timestamp = time.time()
             category = categorize_command(raw)
+            last_category = category
             new_category = category not in categories_seen
             categories_seen.add(category)
 
@@ -174,20 +176,35 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
         engagement = reward_calc.engagement_score(duration, command_count, behavior_class)
 
         # End-of-session reward and final Q-table update
-        if prev_state is not None and prev_action is not None:
+        if prev_state is not None and prev_action is not None and last_category is not None:
+            terminal_step_reward = reward_calc.transition_reward(
+                observed_category=last_category,
+                behavior_class=behavior_class,
+                action_id=prev_action,
+                continued=False,
+                new_category=False,
+                previous_category=None,
+            )
             end_reward = reward_calc.session_reward(
                 duration=duration,
                 unique_categories=len(categories_seen),
                 behavior_class=behavior_class,
                 command_count=command_count,
             )
-            total_reward += end_reward
+            total_reward += terminal_step_reward + end_reward
 
             # CREDIT ASSIGNMENT FIX:
             # end_reward (session_bonus) artık Q-güncellemesine dahil edilmiyor.
             # Son aksiyon tüm oturum bonusunu "hak etmez" — bu yanlış bir atıf.
             # Adım ödülleri zaten döngü içinde işlendi.
             with _agent_lock:
+                _agent.update(
+                    prev_state,
+                    prev_action,
+                    terminal_step_reward,
+                    prev_state,
+                    terminal=True,
+                )
                 _agent.decay_epsilon()
                 _agent.save_q_table()
 
