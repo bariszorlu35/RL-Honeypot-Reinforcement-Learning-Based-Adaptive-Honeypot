@@ -117,6 +117,34 @@ def get_session_commands(session_id: str) -> List[dict]:
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_recent_commands(limit: int = 200) -> List[dict]:
+    """Return the most recent command records with session context."""
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                commands.id,
+                commands.session_id,
+                commands.timestamp,
+                commands.command,
+                commands.category,
+                commands.action_taken,
+                commands.reward,
+                sessions.mode,
+                sessions.attacker_profile,
+                sessions.behavior_class
+            FROM commands
+            LEFT JOIN sessions ON commands.session_id = sessions.id
+            ORDER BY commands.timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def clear_db() -> None:
     """Delete all records from both tables (used for fresh demo runs)."""
     with _db_lock:

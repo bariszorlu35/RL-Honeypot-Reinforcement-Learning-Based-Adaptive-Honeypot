@@ -10,3 +10,4 @@ __pycache__/
 venv/
 .q_table.json
 q_table.json
+training_summary.json

@@ -93,6 +93,7 @@ def _run_session(
     profile_name: str,
     session_num: int,
     total: int,
+    delay_scale: float,
 ) -> Dict:
     """Connect to the honeypot, send commands per the chosen profile, and return stats.
 
@@ -143,7 +144,7 @@ def _run_session(
                 except (socket.timeout, OSError):
                     break
 
-                delay = random.uniform(*delay_range)
+                delay = random.uniform(*delay_range) * delay_scale
                 time.sleep(delay)
 
     except (ConnectionRefusedError, OSError) as exc:
@@ -168,7 +169,12 @@ def _run_session(
     }
 
 
-def run_simulation(mode: str, n_sessions: int, forced_profile: str = "") -> None:
+def run_simulation(
+    mode: str,
+    n_sessions: int,
+    forced_profile: str = "",
+    delay_scale: float = 1.0,
+) -> None:
     """Run n_sessions attacker sessions against the chosen honeypot.
 
     Args:
@@ -184,13 +190,15 @@ def run_simulation(mode: str, n_sessions: int, forced_profile: str = "") -> None
         print(f"[Simulator] Forced profile: {forced_profile}")
     else:
         print("[Simulator] Profile mix: 40% bot / 30% script_kiddie / 30% operator")
+    if delay_scale != 1.0:
+        print(f"[Simulator] Delay scale: {delay_scale:g}x")
 
     results = []
     profile_counts: Dict[str, int] = {}
 
     for i in range(1, n_sessions + 1):
         profile_name = forced_profile if forced_profile else random.choice(_DEFAULT_MIX)
-        stats = _run_session(host, port, profile_name, i, n_sessions)
+        stats = _run_session(host, port, profile_name, i, n_sessions, delay_scale)
         results.append(stats)
         profile_counts[profile_name] = profile_counts.get(profile_name, 0) + 1
 
@@ -235,8 +243,14 @@ def main() -> None:
         default="",
         help="Force a single attacker profile; default is a 40/30/30 mix",
     )
+    parser.add_argument(
+        "--delay-scale",
+        type=float,
+        default=1.0,
+        help="Multiply profile sleep delays by this value; use 0.05 for fast demos",
+    )
     args = parser.parse_args()
-    run_simulation(args.mode, args.sessions, args.profile)
+    run_simulation(args.mode, args.sessions, args.profile, max(args.delay_scale, 0.0))
 
 
 if __name__ == "__main__":

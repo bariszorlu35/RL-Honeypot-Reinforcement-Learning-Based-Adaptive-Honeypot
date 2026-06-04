@@ -3,6 +3,8 @@
 All tunable parameters live here. No magic numbers anywhere else in the project.
 """
 
+import os
+
 HOST = "127.0.0.1"
 STATIC_PORT = 2323
 RL_PORT = 2324
@@ -14,7 +16,9 @@ ALPHA = 0.1           # Learning rate
 GAMMA = 0.9           # Discount factor
 EPSILON_START = 1.0   # Start fully exploratory
 EPSILON_MIN = 0.05    # Never drop below 5% exploration
-EPSILON_DECAY = 0.995 # Multiply epsilon by this after each episode
+EPSILON_DECAY = 0.9997 # Multiply epsilon by this after each episode
+                       # 0.995 → min sonra ~1.400 oturum (çok erken)
+                       # 0.9997 → min sonra ~20.000 oturum (tüm eğitimi kapsar)
 
 # Reward weights
 W_ENGAGE = 1.0    # Engagement continuation reward
@@ -28,8 +32,23 @@ HUMAN_SCORE_THRESHOLD = 2
 FAST_TEMPO_CPM = 60   # Commands per minute above which tempo is FAST
 SLOW_TEMPO_CPM = 10   # Commands per minute below which tempo is SLOW
 
+def _float_from_env(name: str, default: float) -> float:
+    """Read a float environment override, falling back to default on mistakes."""
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 # Response timing
-SLOW_RESPONSE_DELAY = 2.0  # seconds added by SLOW_RESPONSE strategy
+SLOW_RESPONSE_DELAY = _float_from_env(
+    "RL_HP_SLOW_RESPONSE_DELAY",
+    2.0,
+)  # seconds added by SLOW_RESPONSE strategy
+IDLE_STATUS_INTERVAL = _float_from_env(
+    "RL_HP_STATUS_INTERVAL",
+    15.0,
+)  # seconds between "waiting for traffic" status lines
 
 # Action names (for logging and display)
 ACTION_NAMES = {
@@ -41,3 +60,25 @@ ACTION_NAMES = {
 }
 
 HONEYPOT_BANNER = "\r\nUbuntu 20.04.3 LTS\r\nlogin: "
+
+# ── Fix 4: Genişletilmiş state temsili ────────────────────────────────────────
+STATE_WINDOW_SIZE = 3     # Pencere 3: 7^3×3×3×3 = ~13k state → 20k oturumla örtülür
+                          # Pencere 5 çok büyük (450k+ teorik state), yakınsama güçleşir
+DEPTH_EARLY_MAX   = 5     # 1-5 komut  → EARLY
+DEPTH_MID_MAX     = 15    # 6-15 komut → MID  (16+ → LATE)
+
+# ── Fix 5: TTP aşama bazlı reward ─────────────────────────────────────────────
+# Kill-chain'de ne kadar derinde → o kadar değerli istihbarat
+CATEGORY_WEIGHTS = {
+    "AUTH":    0.5,   # Credential stuffing: yaygın, düşük değer
+    "RECON":   1.0,   # Keşif: temel değer
+    "FILE":    1.3,   # Dosya erişimi: saldırgan bir şey buldu
+    "EXEC":    1.8,   # Komut çalıştırma: yüksek değer
+    "PERSIST": 2.0,   # Kalıcılık: en yüksek değer
+    "UNKNOWN": 0.8,   # Tanınmayan komut: temel altı
+}
+TTP_PROGRESSION_BONUS = 1.5   # Kill-chain'de ilerleme bonusu
+EXEC_PERSIST_BONUS    = 1.5   # EXEC/PERSIST kategorisi ek bonusu
+
+# ── Fix 1: Exploration bonusu ──────────────────────────────────────────────────
+EXPLORATION_BONUS = 0.3   # Daha önce hiç görülmemiş state'e girildiğinde

@@ -4,6 +4,7 @@ ALL output is simulated fake text. No real commands are ever executed.
 Fake credentials are clearly marked and are not real.
 """
 
+import threading
 import time
 from typing import Tuple
 
@@ -99,6 +100,8 @@ _HONEYTRAP_HINTS = [
 
 _lure_idx = 0
 _trap_idx = 0
+_lure_lock = threading.Lock()
+_trap_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +228,9 @@ def strategy_decoy_lure(command: str) -> str:
     """Return fake success plus a hint toward seemingly valuable files."""
     global _lure_idx
     base = _context_response(command)
-    hint = _DECOY_LURE_HINTS[_lure_idx % len(_DECOY_LURE_HINTS)]
-    _lure_idx += 1
+    with _lure_lock:
+        hint = _DECOY_LURE_HINTS[_lure_idx % len(_DECOY_LURE_HINTS)]
+        _lure_idx += 1
     return base + hint
 
 
@@ -242,8 +246,9 @@ def strategy_honeytrap_offer(command: str) -> str:
     """Return fake success plus a honeytrap hint toward a high-value target."""
     global _trap_idx
     base = _context_response(command)
-    trap = _HONEYTRAP_HINTS[_trap_idx % len(_HONEYTRAP_HINTS)]
-    _trap_idx += 1
+    with _trap_lock:
+        trap = _HONEYTRAP_HINTS[_trap_idx % len(_HONEYTRAP_HINTS)]
+        _trap_idx += 1
     return base + trap
 
 

@@ -24,6 +24,45 @@ from response_strategies import categorize_command, get_response
 # One shared agent that learns across all sessions; lock protects Q-table access
 _agent = QLearningAgent(q_table_path=config.Q_TABLE_PATH)
 _agent_lock = threading.Lock()
+_status_lock = threading.Lock()
+_active_sessions = 0
+_completed_sessions = 0
+_total_commands = 0
+_total_reward = 0.0
+
+
+def _record_session_start() -> None:
+    """Track active sessions for status output."""
+    global _active_sessions
+    with _status_lock:
+        _active_sessions += 1
+
+
+def _record_session_end(command_count: int, total_reward: float) -> None:
+    """Track completed sessions for periodic status output."""
+    global _active_sessions, _completed_sessions, _total_commands, _total_reward
+    with _status_lock:
+        _active_sessions = max(0, _active_sessions - 1)
+        _completed_sessions += 1
+        _total_commands += command_count
+        _total_reward += total_reward
+
+
+def _print_status(last_connection_at: float) -> None:
+    """Print a short heartbeat so idle listening is visible."""
+    with _status_lock:
+        active = _active_sessions
+        completed = _completed_sessions
+        commands = _total_commands
+        reward = _total_reward
+
+    idle_for = time.time() - last_connection_at
+    print(
+        "[RL Honeypot] Waiting for traffic... "
+        f"active={active} completed={completed} commands={commands} "
+        f"total_reward={reward:.2f} idle={idle_for:.0f}s "
+        f"epsilon={_agent.epsilon:.3f} states={_agent.total_states}"
+    )
 
 
 def _handle_client(conn: socket.socket, addr: tuple) -> None:
@@ -43,6 +82,7 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
     prev_state = None
     prev_action = None
 
+    _record_session_start()
     print(f"[RL Honeypot] New connection {addr[0]}:{addr[1]} → session {session_id}")
 
     try:
@@ -63,6 +103,7 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
             # Allow simulator to communicate the attacker profile
             if raw.startswith("#PROFILE:"):
                 attacker_profile = raw.split(":", 1)[1].strip()
+                conn.sendall(b"$ ")
                 continue
 
             command_count += 1
@@ -142,31 +183,38 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
             )
             total_reward += end_reward
 
-            terminal_state = state_builder.get_state(classifier)
+            # CREDIT ASSIGNMENT FIX:
+            # end_reward (session_bonus) artık Q-güncellemesine dahil edilmiyor.
+            # Son aksiyon tüm oturum bonusunu "hak etmez" — bu yanlış bir atıf.
+            # Adım ödülleri zaten döngü içinde işlendi.
             with _agent_lock:
-                _agent.update(prev_state, prev_action, end_reward, terminal_state)
                 _agent.decay_epsilon()
                 _agent.save_q_table()
 
-        database.log_session(
-            mode="rl",
-            session_id=session_id,
-            attacker_profile=attacker_profile,
-            start_time=start_time,
-            duration=duration,
-            command_count=command_count,
-            unique_categories=len(categories_seen),
-            behavior_class=behavior_class,
-            engagement_score=engagement,
-            total_reward=total_reward,
-        )
+        if command_count > 0:
+            database.log_session(
+                mode="rl",
+                session_id=session_id,
+                attacker_profile=attacker_profile,
+                start_time=start_time,
+                duration=duration,
+                command_count=command_count,
+                unique_categories=len(categories_seen),
+                behavior_class=behavior_class,
+                engagement_score=engagement,
+                total_reward=total_reward,
+            )
         conn.close()
-        print(
-            f"[RL Honeypot] Session {session_id} ended: "
-            f"duration={duration:.1f}s cmds={command_count} "
-            f"total_reward={total_reward:.2f} behavior={behavior_class} "
-            f"profile={attacker_profile}"
-        )
+        _record_session_end(command_count, total_reward)
+        if command_count == 0:
+            print(f"[RL Honeypot] Session {session_id} closed before commands; not logged.")
+        else:
+            print(
+                f"[RL Honeypot] Session {session_id} ended: "
+                f"duration={duration:.1f}s cmds={command_count} "
+                f"total_reward={total_reward:.2f} behavior={behavior_class} "
+                f"profile={attacker_profile}"
+            )
 
 
 def run() -> None:
@@ -182,13 +230,29 @@ def run() -> None:
     print(f"[RL Honeypot] Listening on {config.HOST}:{config.RL_PORT}")
     print(f"[RL Honeypot] Q-table path: {config.Q_TABLE_PATH}")
     print(f"[RL Honeypot] Starting epsilon: {_agent.epsilon:.3f}")
+    print("[RL Honeypot] This process is a server; it waits until a client connects.")
+    print(
+        "[RL Honeypot] In another terminal, generate traffic with: "
+        "python3 simulate_attacker.py --mode rl --sessions 10"
+    )
+    print(
+        "[RL Honeypot] Optional dashboard: "
+        "streamlit run dashboard.py"
+    )
     print("[RL Honeypot] Press Ctrl+C to stop.")
+
+    last_status_at = time.time()
+    last_connection_at = last_status_at
 
     try:
         while True:
             try:
                 conn, addr = server.accept()
+                last_connection_at = time.time()
             except socket.timeout:
+                if time.time() - last_status_at >= config.IDLE_STATUS_INTERVAL:
+                    _print_status(last_connection_at)
+                    last_status_at = time.time()
                 continue
             thread = threading.Thread(
                 target=_handle_client,

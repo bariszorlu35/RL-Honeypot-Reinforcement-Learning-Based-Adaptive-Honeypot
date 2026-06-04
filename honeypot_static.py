@@ -51,6 +51,7 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
             # Allow simulator to pass the attacker profile as a special handshake line
             if raw.startswith("#PROFILE:"):
                 attacker_profile = raw.split(":", 1)[1].strip()
+                conn.sendall(b"$ ")
                 continue
 
             command_count += 1
@@ -86,24 +87,28 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
     finally:
         duration = time.time() - start_time
         engagement = _compute_engagement(duration, command_count)
-        database.log_session(
-            mode="static",
-            session_id=session_id,
-            attacker_profile=attacker_profile,
-            start_time=start_time,
-            duration=duration,
-            command_count=command_count,
-            unique_categories=len(categories_seen),
-            behavior_class="UNKNOWN",  # Static mode does not classify behaviour
-            engagement_score=engagement,
-            total_reward=0.0,
-        )
+        if command_count > 0:
+            database.log_session(
+                mode="static",
+                session_id=session_id,
+                attacker_profile=attacker_profile,
+                start_time=start_time,
+                duration=duration,
+                command_count=command_count,
+                unique_categories=len(categories_seen),
+                behavior_class="UNKNOWN",  # Static mode does not classify behaviour
+                engagement_score=engagement,
+                total_reward=0.0,
+            )
         conn.close()
-        print(
-            f"[Static Honeypot] Session {session_id} ended: "
-            f"duration={duration:.1f}s cmds={command_count} "
-            f"profile={attacker_profile}"
-        )
+        if command_count == 0:
+            print(f"[Static Honeypot] Session {session_id} closed before commands; not logged.")
+        else:
+            print(
+                f"[Static Honeypot] Session {session_id} ended: "
+                f"duration={duration:.1f}s cmds={command_count} "
+                f"profile={attacker_profile}"
+            )
 
 
 def run() -> None:
