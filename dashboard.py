@@ -17,6 +17,7 @@ Run with: streamlit run dashboard.py
 import json
 import os
 import time
+from collections import Counter
 from datetime import datetime
 from typing import Optional
 
@@ -137,12 +138,22 @@ def _load_q_table() -> dict:
 
 def _q_summary(raw: dict) -> dict:
     states = [k for k in raw if not k.startswith("_")]
+    behavior_counts = Counter()
+    profile_hint_counts = Counter()
+    for state_key in states:
+        parts = state_key.split("|")
+        if len(parts) > 2:
+            behavior_counts[parts[2]] += 1
+        if len(parts) > 4:
+            profile_hint_counts[parts[4]] += 1
+
     return {
         "states":         len(states),
         "epsilon":        raw.get("_epsilon"),
-        "bot_states":     sum(1 for k in states if k.endswith("|BOT")),
-        "human_states":   sum(1 for k in states if k.endswith("|HUMAN")),
-        "unknown_states": sum(1 for k in states if k.endswith("|UNKNOWN")),
+        "bot_states":     behavior_counts["BOT"],
+        "human_states":   behavior_counts["HUMAN"],
+        "unknown_states": behavior_counts["UNKNOWN"],
+        "profile_hints":  dict(profile_hint_counts),
     }
 
 

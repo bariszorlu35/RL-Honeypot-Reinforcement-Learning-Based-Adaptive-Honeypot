@@ -119,6 +119,7 @@ State representation:
 - `tempo` — typing speed bucket (`SLOW`, `NORMAL`, `FAST`)
 - `behavior_class` — `BOT`, `HUMAN`, or `UNKNOWN`
 - `depth` — session stage bucket (`EARLY`, `MID`, `LATE`)
+- `profile_hint` — inferred coarse profile (`BOT`, `SCRIPT`, `OPERATOR`, `UNKNOWN`)
 
 Actions:
 
@@ -139,23 +140,29 @@ Q-table persistence: `q_table.json`.
 
 Evaluation is separated from training. Training keeps exploration enabled
 (`epsilon` decays to `0.05`), while learned-policy evaluation temporarily uses
-`epsilon=0.00` and performs no Q-table updates.
+`epsilon=0.00` and performs no Q-table updates. The main reported result uses
+10 deterministic evaluation seeds to show that the result is not a one-seed
+accident.
 
-Current offline benchmark (`100000` training sessions, `8000` evaluation
-sessions, seed `20260603`):
+Current offline benchmark (`100000` training sessions, `10` evaluation seeds,
+`8000` RL evaluation sessions per seed):
 
 | Metric | Value |
 |--------|-------|
 | Training sessions | 100,000 |
-| Evaluation sessions | 8,000 |
-| Learned states | 1,957 |
-| RL evaluation reward | 394.10 |
-| Random baseline reward | 201.89 |
-| Best fixed baseline | always_honeytrap |
-| Best fixed baseline reward | 410.95 |
-| Success vs best fixed | 95.9% |
-| RL vs random | +95.2% |
-| Gap to best fixed | -4.1% |
+| Evaluation seeds | 10 |
+| RL eval sessions per seed | 8,000 |
+| Baseline sessions per policy/seed | 3,000 |
+| Learned states | 2,432 |
+| RL reward mean ± std | 399.39 ± 5.96 |
+| RL reward min / max | 390.50 / 409.55 |
+| Random baseline mean | 204.34 |
+| Best fixed baseline | always_decoy_lure |
+| Best fixed mean ± std | 398.82 ± 8.36 |
+| Success vs best fixed | 100.14% |
+| RL vs random | +95.46% |
+| Gap to best fixed | +0.14% |
+| Per-seed success min / max | 96.93% / 103.31% |
 
 ---
 
@@ -183,7 +190,8 @@ python simulate_attacker.py --mode rl --sessions 200
 
 ```bash
 python train_model.py --reset --sessions 100000 --seed 20260603 \
-  --compare-baselines --baseline-sessions 3000 --eval-sessions 8000
+  --compare-baselines --baseline-sessions 3000 --eval-sessions 8000 \
+  --eval-seed-count 10 --eval-seed-stride 17
 ```
 
 - Inspect Q-table after a run:
@@ -286,8 +294,9 @@ teşvik edecek şekilde tasarlanmıştır.
 
 Eğitim ve değerlendirme ayrıdır: eğitim sonunda keşif oranı `epsilon=0.05`
 kalır, değerlendirme/test aşamasında ise öğrenilmiş politika `epsilon=0.00`
-ile ölçülür. Güncel offline sonuçta RL politika en iyi sabit baseline'ın
-`%95.9` seviyesine ulaşmış, random baseline'a göre `%95.2` iyileşme vermiştir.
+ile ölçülür. Güncel 10-seed offline sonuçta RL politika en iyi sabit
+baseline'ı ortalamada geçmiştir: başarı `100.14%`, best fixed farkı `+0.14%`,
+random baseline'a göre iyileşme `+95.46%`.
 
 ---
 

@@ -7,7 +7,7 @@ Changes vs original:
            yeni sinyaller (EXEC/PERSIST=HUMAN, pure-auth=BOT), eşik düzeltmesi.
   Fix 4 — StateBuilder: ayarlanabilir kategori penceresi
            (config.STATE_WINDOW_SIZE), oturum derinliği (EARLY/MID/LATE)
-           state'e eklendi → 4-tuple.
+           ve profile_hint state'e eklendi → 5-tuple.
   Fix 5 — RewardCalculator: kategori ağırlıkları, TTP ilerleme bonusu,
            EXEC/PERSIST yüksek değer bonusu.
   Fix 1 — QLearningAgent.update(): daha önce hiç görülmemiş state'e
@@ -151,6 +151,42 @@ class BehaviorClassifier:
             return "SLOW"
         return "NORMAL"
 
+    def get_profile_hint(self) -> str:
+        """Infer a coarse attacker profile hint from cumulative session signals.
+
+        This is not the simulator's hidden profile label. It is derived only from
+        timing and command-category history already visible to the honeypot.
+        """
+        behavior_class = self.classify()
+        categories = self._categories
+        total = len(categories)
+        unique_categories = len(set(categories))
+        cpm = self._commands_per_minute()
+        has_scan = "SCAN" in categories
+        has_file = "FILE" in categories
+        has_exec = "EXEC" in categories
+        has_exploit = "EXPLOIT" in categories
+        has_persist = "PERSIST" in categories
+
+        if behavior_class == "BOT":
+            return "BOT"
+
+        if behavior_class == "HUMAN":
+            # Strong operator signals: exploit use, slow multi-stage work, or
+            # a long chain that combines file access with execution/persistence.
+            if has_exploit:
+                return "OPERATOR"
+            if total >= 6 and cpm <= 15 and unique_categories >= 3:
+                return "OPERATOR"
+            if total >= 14 and cpm <= 20 and has_file and (has_exec or has_persist):
+                return "OPERATOR"
+
+            # Script-kiddie sessions tend to be faster, tool-driven, and shorter.
+            if has_scan or cpm > 18 or total <= 14:
+                return "SCRIPT"
+
+        return "UNKNOWN"
+
 
 # ---------------------------------------------------------------------------
 # State Builder  (Fix 4)
@@ -162,8 +198,9 @@ class StateBuilder:
     Fix 4 improvements:
     - Pencere boyutu config.STATE_WINDOW_SIZE'dan okunur (varsayılan 3).
     - Oturum derinliği (EARLY/MID/LATE) state'in 4. boyutu olarak eklendi.
-    State format: (window_tuple, tempo, behavior_class, depth)
-    Key format  : "c1,c2,c3|TEMPO|BEHAVIOR|DEPTH"
+    - Profile hint state'in 5. boyutu olarak eklendi.
+    State format: (window_tuple, tempo, behavior_class, depth, profile_hint)
+    Key format  : "c1,c2,c3|TEMPO|BEHAVIOR|DEPTH|PROFILE_HINT"
     """
 
     WINDOW_SIZE: int = config.STATE_WINDOW_SIZE
@@ -189,13 +226,14 @@ class StateBuilder:
 
     def get_state(
         self, classifier: BehaviorClassifier
-    ) -> Tuple[tuple, str, str, str]:
-        """Return (window_tuple, tempo, behavior_class, depth)."""
+    ) -> Tuple[tuple, str, str, str, str]:
+        """Return (window_tuple, tempo, behavior_class, depth, profile_hint)."""
         return (
             tuple(self._window),
             classifier.get_tempo(),
             classifier.classify(),
             self._depth(),
+            classifier.get_profile_hint(),
         )
 
 
@@ -204,9 +242,13 @@ class StateBuilder:
 # ---------------------------------------------------------------------------
 
 def _state_to_key(state: Tuple) -> str:
-    """Serialize a 4-element state tuple to a JSON-safe string key."""
-    window, tempo, bclass, depth = state
-    return f"{','.join(window)}|{tempo}|{bclass}|{depth}"
+    """Serialize a state tuple to a JSON-safe string key."""
+    if len(state) == 4:
+        window, tempo, bclass, depth = state
+        return f"{','.join(window)}|{tempo}|{bclass}|{depth}"
+
+    window, tempo, bclass, depth, profile_hint = state
+    return f"{','.join(window)}|{tempo}|{bclass}|{depth}|{profile_hint}"
 
 
 class QLearningAgent:
@@ -279,7 +321,11 @@ class QLearningAgent:
         bias so the agent avoids obviously poor actions in sparse or noisy
         states while Q-learning continues to adjust the final ranking.
         """
-        window, tempo, behavior_class, depth = state
+        if len(state) == 4:
+            window, tempo, behavior_class, depth = state
+            profile_hint = behavior_class
+        else:
+            window, tempo, behavior_class, depth, profile_hint = state
         scores = {action: 0.0 for action in range(self.NUM_ACTIONS)}
         high_value_seen = any(
             category in ("EXEC", "EXPLOIT", "PERSIST")
@@ -290,22 +336,26 @@ class QLearningAgent:
             for category in window
         )
 
-        if behavior_class == "BOT":
+        if profile_hint == "BOT":
             # Fast/repetitive bot traffic is better slowed or discouraged than
             # fed with rich fake artifacts.
-            scores[3] += 2.5  # SLOW_RESPONSE
+            scores[3] += 3.0  # SLOW_RESPONSE
             scores[0] += 1.5  # SILENT_ERROR
             scores[1] -= 1.0
             scores[2] -= 1.0
             scores[4] -= 1.0
+        elif profile_hint == "OPERATOR":
+            scores[4] += 3.0  # HONEYTRAP_OFFER for deeper human sessions
+            scores[2] += 0.5
+        elif profile_hint == "SCRIPT":
+            scores[2] += 3.0  # DECOY_LURE for tool-driven sessions
+            scores[4] -= 0.5
         elif behavior_class == "HUMAN":
-            scores[2] += 1.0  # DECOY_LURE remains a safe human default
-            if depth == "LATE" or high_value_seen or (
+            if depth != "EARLY" or high_value_seen or (
                 tempo == "SLOW" and file_or_high_seen
             ):
-                scores[4] += 2.5  # HONEYTRAP_OFFER for deeper sessions
-            else:
-                scores[2] += 2.0
+                scores[4] += 2.0
+            scores[2] += 1.5
         else:
             # Unknown early sessions should be kept engaged without escalating
             # too aggressively.

@@ -10,6 +10,7 @@ virtual time and action-dependent attacker reactions.
 import argparse
 import json
 import random
+import statistics
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -387,7 +388,12 @@ def _run_baseline_session(
     )
 
 
-def run_baselines(sessions: int, include_bot: bool, seed: int) -> dict:
+def run_baselines(
+    sessions: int,
+    include_bot: bool,
+    seed: int,
+    verbose: bool = True,
+) -> dict:
     """Her sabit policy için N oturum çalıştır, ortalama reward'ı karşılaştır.
 
     Policies:
@@ -435,9 +441,22 @@ def run_baselines(sessions: int, include_bot: bool, seed: int) -> dict:
             "avg_commands": avg_c,
             "behaviors":    dict(beh_counts),
         }
-        print(f"  [Baseline] {policy_name:25s}  avg_reward={avg_r:8.2f}  avg_cmds={avg_c:.1f}")
+        if verbose:
+            print(f"  [Baseline] {policy_name:25s}  avg_reward={avg_r:8.2f}  avg_cmds={avg_c:.1f}")
 
     return results
+
+
+def _series_summary(values: List[float], digits: int = 3) -> dict:
+    """Return mean/std/min/max for a numeric series."""
+    if not values:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+    return {
+        "mean": round(statistics.mean(values), digits),
+        "std": round(statistics.stdev(values), digits) if len(values) > 1 else 0.0,
+        "min": round(min(values), digits),
+        "max": round(max(values), digits),
+    }
 
 
 def evaluate_learned_policy(
@@ -485,6 +504,87 @@ def evaluate_learned_policy(
     }
 
 
+def run_multi_seed_benchmark(
+    agent: QLearningAgent,
+    seed: int,
+    seed_count: int,
+    seed_stride: int,
+    evaluation_sessions: int,
+    baseline_sessions: int,
+    include_bot: bool,
+) -> dict:
+    """Evaluate RL and fixed baselines over multiple deterministic seeds."""
+    seeds = [seed + index * seed_stride for index in range(seed_count)]
+    rl_rewards: List[float] = []
+    rl_commands: List[float] = []
+    fixed_rewards: Dict[str, List[float]] = {}
+    random_rewards: List[float] = []
+
+    for eval_seed in seeds:
+        eval_result = evaluate_learned_policy(
+            agent=agent,
+            sessions=evaluation_sessions,
+            include_bot=include_bot,
+            seed=eval_seed,
+        )
+        rl_rewards.append(eval_result["avg_reward"])
+        rl_commands.append(eval_result["avg_commands"])
+
+        baseline_results = run_baselines(
+            sessions=baseline_sessions,
+            include_bot=include_bot,
+            seed=eval_seed - 1,
+            verbose=False,
+        )
+        for policy_name, result in baseline_results.items():
+            fixed_rewards.setdefault(policy_name, []).append(result["avg_reward"])
+        random_rewards.append(baseline_results["random"]["avg_reward"])
+
+    fixed_summaries = {
+        policy_name: _series_summary(values)
+        for policy_name, values in fixed_rewards.items()
+    }
+    best_fixed_policy = max(
+        fixed_summaries,
+        key=lambda policy_name: fixed_summaries[policy_name]["mean"],
+    )
+    rl_reward_summary = _series_summary(rl_rewards)
+    best_fixed_summary = fixed_summaries[best_fixed_policy]
+    random_summary = _series_summary(random_rewards)
+
+    rl_mean = rl_reward_summary["mean"]
+    best_mean = best_fixed_summary["mean"]
+    random_mean = random_summary["mean"]
+    per_seed_success = [
+        rl_reward / max(fixed_reward, 1e-9) * 100.0
+        for rl_reward, fixed_reward in zip(
+            rl_rewards,
+            fixed_rewards[best_fixed_policy],
+        )
+    ]
+
+    return {
+        "seed_count": seed_count,
+        "seeds": seeds,
+        "evaluation_sessions_per_seed": evaluation_sessions,
+        "baseline_sessions_per_policy_per_seed": baseline_sessions,
+        "rl_reward": rl_reward_summary,
+        "rl_commands": _series_summary(rl_commands),
+        "random_reward": random_summary,
+        "best_fixed_policy": best_fixed_policy,
+        "best_fixed_reward": best_fixed_summary,
+        "fixed_policy_rewards": fixed_summaries,
+        "success_vs_best_fixed_pct": round(rl_mean / max(best_mean, 1e-9) * 100, 2),
+        "rl_vs_best_fixed_pct": round((rl_mean - best_mean) / max(best_mean, 1e-9) * 100, 2),
+        "rl_vs_random_pct": round((rl_mean - random_mean) / max(random_mean, 1e-9) * 100, 2),
+        "per_seed_success_vs_best_fixed_pct": _series_summary(per_seed_success, digits=2),
+        "rl_reward_values": [round(value, 3) for value in rl_rewards],
+        "best_fixed_reward_values": [
+            round(value, 3) for value in fixed_rewards[best_fixed_policy]
+        ],
+    }
+
+
 def train(
     sessions: int,
     q_table_path: str,
@@ -496,6 +596,8 @@ def train(
     compare_baselines: bool = False,
     baseline_sessions: int = 2000,
     evaluation_sessions: int = 5000,
+    evaluation_seed_count: int = 1,
+    evaluation_seed_stride: int = 17,
 ) -> dict:
     if reset:
         Path(q_table_path).unlink(missing_ok=True)
@@ -599,6 +701,33 @@ def train(
             f"\n  RL vs best fixed: {summary['baseline_comparison']['rl_vs_best_fixed_pct']:+.1f}%"
         )
 
+        if evaluation_seed_count > 1:
+            print(
+                f"\n[Trainer] Multi-seed benchmark çalıştırılıyor "
+                f"({evaluation_seed_count} seed × {evaluation_sessions} RL eval oturumu)..."
+            )
+            multi_seed = run_multi_seed_benchmark(
+                agent=agent,
+                seed=seed + 2,
+                seed_count=evaluation_seed_count,
+                seed_stride=evaluation_seed_stride,
+                evaluation_sessions=evaluation_sessions,
+                baseline_sessions=baseline_sessions,
+                include_bot=include_bot,
+            )
+            summary["multi_seed_evaluation"] = multi_seed
+            print(
+                f"\n[Trainer] Multi-seed özeti:"
+                f"\n  RL mean reward       : {multi_seed['rl_reward']['mean']:.2f}"
+                f"\n  Best fixed policy    : {multi_seed['best_fixed_policy']}"
+                f"\n  Best fixed mean      : {multi_seed['best_fixed_reward']['mean']:.2f}"
+                f"\n  Success vs best      : {multi_seed['success_vs_best_fixed_pct']:.2f}%"
+                f"\n  RL vs best fixed     : {multi_seed['rl_vs_best_fixed_pct']:+.2f}%"
+                f"\n  RL vs random         : {multi_seed['rl_vs_random_pct']:+.2f}%"
+                f"\n  Per-seed success min : "
+                f"{multi_seed['per_seed_success_vs_best_fixed_pct']['min']:.2f}%"
+            )
+
     return summary
 
 
@@ -668,6 +797,18 @@ def main() -> None:
         default=5000,
         help="--compare-baselines için epsilon=0 learned-policy test oturumu",
     )
+    parser.add_argument(
+        "--eval-seed-count",
+        type=int,
+        default=1,
+        help="Kaç farklı seed ile evaluation yapılacağı (varsayılan: 1)",
+    )
+    parser.add_argument(
+        "--eval-seed-stride",
+        type=int,
+        default=17,
+        help="Multi-seed evaluation için seed artış değeri",
+    )
 
     args = parser.parse_args()
     if args.no_bot and args.profile == "bot":
@@ -684,6 +825,8 @@ def main() -> None:
         compare_baselines=args.compare_baselines,
         baseline_sessions=args.baseline_sessions,
         evaluation_sessions=args.eval_sessions,
+        evaluation_seed_count=max(args.eval_seed_count, 1),
+        evaluation_seed_stride=max(args.eval_seed_stride, 1),
     )
 
     with open(args.summary, "w") as fh:

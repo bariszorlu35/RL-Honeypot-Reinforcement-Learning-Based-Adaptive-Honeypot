@@ -65,7 +65,7 @@ ACTION_NAMES = {
 HONEYPOT_BANNER = "\r\nUbuntu 20.04.3 LTS\r\nlogin: "
 
 # ── Fix 4: Genişletilmiş state temsili ────────────────────────────────────────
-STATE_WINDOW_SIZE = 3     # Pencere 3: 9^3×3×3×3 = ~19.7k teorik state
+STATE_WINDOW_SIZE = 3     # Pencere 3 + profile_hint: 9^3×3×3×3×4 = ~78.7k state
                           # Pencere 5 çok büyük olur, yakınsama güçleşir
 DEPTH_EARLY_MAX   = 5     # 1-5 komut  → EARLY
 DEPTH_MID_MAX     = 15    # 6-15 komut → MID  (16+ → LATE)

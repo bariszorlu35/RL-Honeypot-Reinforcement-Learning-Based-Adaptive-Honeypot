@@ -25,10 +25,10 @@ attacker profiles?*
 
 ## 2. State Space Definition
 
-The RL state is a 4-tuple:
+The RL state is a 5-tuple:
 
 ```
-state = (last_3_command_categories, tempo, behavior_class, depth)
+state = (last_3_command_categories, tempo, behavior_class, depth, profile_hint)
 ```
 
 | Component | Values | Description |
@@ -37,19 +37,21 @@ state = (last_3_command_categories, tempo, behavior_class, depth)
 | `tempo` | `"SLOW"`, `"NORMAL"`, `"FAST"` | Commands per minute: <10 = SLOW, >60 = FAST |
 | `behavior_class` | `"BOT"`, `"HUMAN"`, `"UNKNOWN"` | Classification based on scoring signals |
 | `depth` | `"EARLY"`, `"MID"`, `"LATE"` | Session phase based on command count |
+| `profile_hint` | `"BOT"`, `"SCRIPT"`, `"OPERATOR"`, `"UNKNOWN"` | Coarse profile inference from visible timing and category history |
 
 **Example states:**
 
 ```
-(("NULL", "NULL", "AUTH"), "FAST", "BOT", "EARLY")       — new bot session, auth commands only
-(("RECON", "FILE", "EXEC"), "SLOW", "HUMAN", "MID")      — experienced human, deliberate pace
-(("AUTH", "RECON", "PERSIST"), "NORMAL", "UNKNOWN", "LATE") — mixed signals
+(("NULL", "NULL", "AUTH"), "FAST", "BOT", "EARLY", "BOT")       — new bot session, auth commands only
+(("RECON", "FILE", "EXEC"), "SLOW", "HUMAN", "MID", "OPERATOR") — experienced human, deliberate pace
+(("AUTH", "RECON", "PERSIST"), "NORMAL", "UNKNOWN", "LATE", "UNKNOWN") — mixed signals
 ```
 
 **State space size:** The theoretical maximum is approximately
-`9³ × 3 × 3 × 3 = 19,683` states (8 command categories plus NULL, 3 tempos,
-3 behaviour classes, 3 depth buckets). In practice far fewer states are visited
-because most attack sessions follow predictable patterns.
+`9³ × 3 × 3 × 3 × 4 = 78,732` states (8 command categories plus NULL,
+3 tempos, 3 behaviour classes, 3 depth buckets, 4 profile hints). In practice
+far fewer states are visited because most attack sessions follow predictable
+patterns.
 
 ---
 
@@ -82,7 +84,8 @@ The agent selects an action per command using ε-greedy selection over the Q-tab
 During exploitation, Q-values are combined with a configurable state-aware action
 prior (`ACTION_PRIOR_WEIGHT`). This prior encodes simple honeypot domain knowledge:
 bots are slowed or discouraged, unknown sessions are kept engaged with decoys, and
-deep human-like sessions are steered toward honeytrap offers.
+script-like sessions are kept on decoy lures while operator-like sessions are
+steered toward honeytrap offers.
 
 ---
 
@@ -222,15 +225,21 @@ Current offline benchmark:
 | Metric | Value |
 |--------|-------|
 | Training sessions | 100,000 |
-| Evaluation sessions | 8,000 |
+| Evaluation seeds | 10 |
+| RL eval sessions per seed | 8,000 |
+| Baseline sessions per policy/seed | 3,000 |
 | Training epsilon floor | 0.05 |
 | Evaluation epsilon | 0.00 |
-| RL learned policy avg reward | 394.097 |
-| Random baseline avg reward | 201.890 |
-| Best fixed baseline | `always_honeytrap` |
-| Best fixed avg reward | 410.949 |
-| Success vs best fixed | 95.9% |
-| Improvement vs random | +95.2% |
+| Learned states | 2,432 |
+| RL reward mean ± std | 399.389 ± 5.962 |
+| RL reward min / max | 390.496 / 409.546 |
+| Random baseline mean | 204.336 |
+| Best fixed baseline | `always_decoy_lure` |
+| Best fixed mean ± std | 398.820 ± 8.360 |
+| Success vs best fixed | 100.14% |
+| RL vs best fixed | +0.14% |
+| Improvement vs random | +95.46% |
+| Per-seed success min / max | 96.93% / 103.31% |
 
 ---
 
